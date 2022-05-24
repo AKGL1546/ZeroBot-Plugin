@@ -207,8 +207,8 @@ func init() {
 	// sus = append(sus, 12345678)
 	// sus = append(sus, 87654321)
 
-	启用 gui
-	webctrl.InitGui(*g)
+	// 启用 gui
+	// webctrl.InitGui(*g)
 
 	if *runcfg != "" {
 		f, err := os.Open(*runcfg)
