@@ -15,7 +15,10 @@ import (
 	zero "github.com/wdvxdr1123/ZeroBot"
 	"github.com/wdvxdr1123/ZeroBot/message"
 
-	control "github.com/FloatTech/zbputils/control"
+	ctrl "github.com/FloatTech/zbpctrl"
+	"github.com/FloatTech/zbputils/binary"
+	"github.com/FloatTech/zbputils/control"
+	"github.com/FloatTech/zbputils/ctxext"
 	"github.com/FloatTech/zbputils/file"
 	"github.com/FloatTech/zbputils/img"
 	"github.com/FloatTech/zbputils/img/text"
@@ -24,7 +27,7 @@ import (
 )
 
 const (
-	backgroundURL = "https://iw233.cn/api.php?sort=pc&type=json"
+	backgroundURL = "https://mirlkoi.ifast3.vipnps.vip/api.php?sort=pc&type=json"
 	referer       = "https://iw233.cn/main.html"
 	ua            = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36"
 	signinMax     = 1
@@ -35,7 +38,7 @@ const (
 var levelArray = [...]int{0, 1, 2, 5, 10, 20, 35, 55, 75, 100, 120}
 
 func init() {
-	engine := control.Register("score", &control.Options{
+	engine := control.Register("score", &ctrl.Options[*zero.Ctx]{
 		DisableOnDefault:  false,
 		Help:              "签到得分\n- 签到\n- 获得签到背景[@xxx] | 获得签到背景\n- 查看分数排名",
 		PrivateDataFolder: "score",
@@ -49,18 +52,17 @@ func init() {
 		}
 		sdb = initialize(engine.DataFolder() + "score.db")
 	}()
-	engine.OnFullMatch("签到", zero.OnlyGroup).SetBlock(true).
+	engine.OnFullMatch("签到", zero.OnlyGroup).Limit(ctxext.LimitByGroup).SetBlock(true).
 		Handle(func(ctx *zero.Ctx) {
 			uid := ctx.Event.UserID
 			now := time.Now()
 			today := now.Format("20060102")
 			si := sdb.GetSignInByUID(uid)
 			siUpdateTimeStr := si.UpdatedAt.Format("20060102")
-			if siUpdateTimeStr != today {
-				_ = sdb.InsertOrUpdateSignInCountByUID(uid, 0)
-			}
-
 			drawedFile := cachePath + strconv.FormatInt(uid, 10) + today + "signin.png"
+
+			picFile := cachePath + strconv.FormatInt(uid, 10) + today + ".png"
+
 			if si.Count >= signinMax && siUpdateTimeStr == today {
 				ctx.SendChain(message.Reply(ctx.Event.MessageID), message.Text("今天你已经签到过了！"))
 				if file.IsExist(drawedFile) {
@@ -68,21 +70,21 @@ func init() {
 				}
 				return
 			}
-
-			picFile := cachePath + strconv.FormatInt(uid, 10) + today + ".png"
 			err := initPic(picFile)
 			if err != nil {
 				ctx.SendChain(message.Text("ERROR:", err))
 				return
 			}
-
-			_ = sdb.InsertOrUpdateSignInCountByUID(uid, si.Count+1)
-
 			back, err := gg.LoadImage(picFile)
 			if err != nil {
 				ctx.SendChain(message.Text("ERROR:", err))
 				return
 			}
+			if siUpdateTimeStr != today {
+				_ = sdb.InsertOrUpdateSignInCountByUID(uid, 0)
+			}
+
+			_ = sdb.InsertOrUpdateSignInCountByUID(uid, si.Count+1)
 
 			// 避免图片过大，最大 1280*720
 			back = img.Limit(back, 1280, 720)
@@ -159,7 +161,7 @@ func init() {
 			}
 			ctx.SendChain(message.Image("file:///" + file.BOTPATH + "/" + drawedFile))
 		})
-	engine.OnPrefix("获得签到背景", zero.OnlyGroup).SetBlock(true).
+	engine.OnPrefix("获得签到背景", zero.OnlyGroup).Limit(ctxext.LimitByGroup).SetBlock(true).
 		Handle(func(ctx *zero.Ctx) {
 			param := ctx.State["args"].(string)
 			var uidStr string
@@ -175,7 +177,7 @@ func init() {
 			}
 			ctx.SendChain(message.Image("file:///" + file.BOTPATH + "/" + picFile))
 		})
-	engine.OnFullMatch("查看分数排名", zero.OnlyGroup).SetBlock(true).
+	engine.OnFullMatch("查看分数排名", zero.OnlyGroup).Limit(ctxext.LimitByGroup).SetBlock(true).
 		Handle(func(ctx *zero.Ctx) {
 			today := time.Now().Format("20060102")
 			drawedFile := cachePath + today + "scoreRank.png"
@@ -207,14 +209,17 @@ func init() {
 				ctx.SendChain(message.Text("ERROR:", err))
 				return
 			}
+			f, err := os.Create(drawedFile)
+			if err != nil {
+				ctx.SendChain(message.Text("ERROR:", err))
+				return
+			}
 			bars := make([]chart.Value, len(st))
 			for i, v := range st {
-				bars[i] = chart.Value{
-					Value: float64(v.Score),
-					Label: ctx.CardOrNickName(v.UID),
-				}
+				bars[i].Value = float64(v.Score)
+				bars[i].Label = ctx.CardOrNickName(v.UID)
 			}
-			graph := chart.BarChart{
+			err = chart.BarChart{
 				Font:  font,
 				Title: "饼干排名",
 				Background: chart.Style{
@@ -225,13 +230,7 @@ func init() {
 				Height:   500,
 				BarWidth: 50,
 				Bars:     bars,
-			}
-			f, err := os.Create(drawedFile)
-			if err != nil {
-				ctx.SendChain(message.Text("ERROR:", err))
-				return
-			}
-			err = graph.Render(chart.PNG, f)
+			}.Render(chart.PNG, f)
 			_ = f.Close()
 			if err != nil {
 				_ = os.Remove(drawedFile)
@@ -243,16 +242,17 @@ func init() {
 }
 
 func getHourWord(t time.Time) string {
+	h := t.Hour()
 	switch {
-	case 6 <= t.Hour() && t.Hour() < 12:
+	case 6 <= h && h < 12:
 		return "早上好"
-	case 12 <= t.Hour() && t.Hour() < 14:
+	case 12 <= h && h < 14:
 		return "中午好"
-	case 14 <= t.Hour() && t.Hour() < 19:
+	case 14 <= h && h < 19:
 		return "下午好"
-	case 19 <= t.Hour() && t.Hour() < 24:
+	case 19 <= h && h < 24:
 		return "晚上好"
-	case 0 <= t.Hour() && t.Hour() < 6:
+	case 0 <= h && h < 6:
 		return "凌晨好"
 	default:
 		return ""
@@ -271,20 +271,17 @@ func getLevel(count int) int {
 }
 
 func initPic(picFile string) error {
-	if file.IsNotExist(picFile) {
-		data, err := web.RequestDataWith(web.NewDefaultClient(), backgroundURL, "GET", referer, ua)
-		if err != nil {
-			return err
-		}
-		picURL := gjson.Get(string(data), "pic").String()
-		data, err = web.RequestDataWith(web.NewDefaultClient(), picURL, "GET", "", ua)
-		if err != nil {
-			return err
-		}
-		err = os.WriteFile(picFile, data, 0666)
-		if err != nil {
-			return err
-		}
+	if file.IsExist(picFile) {
+		return nil
 	}
-	return nil
+	data, err := web.RequestDataWith(web.NewDefaultClient(), backgroundURL, "GET", referer, ua)
+	if err != nil {
+		return err
+	}
+	picURL := gjson.Get(binary.BytesToString(data), "pic.0").Str
+	data, err = web.RequestDataWith(web.NewDefaultClient(), picURL, "GET", "", ua)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(picFile, data, 0644)
 }
